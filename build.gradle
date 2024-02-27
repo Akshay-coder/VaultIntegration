@@ -32,6 +32,8 @@ dependencies {
 	runtimeOnly 'io.jsonwebtoken:jjwt-jackson:0.11.5'
 	implementation 'com.nimbusds:nimbus-jose-jwt:9.37.3'
 	implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:2.1.0'
+	implementation 'com.auth0:java-jwt:4.4.0'
+
 
 }
 
