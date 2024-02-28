@@ -1,23 +1,22 @@
 package com.akshayedusource.vaultIntergration.service;
 
 import com.auth0.jwt.JWT;
-import com.auth0.jwt.JWTVerifier;
 import com.auth0.jwt.algorithms.Algorithm;
-import com.auth0.jwt.exceptions.JWTVerificationException;
+import com.auth0.jwt.interfaces.DecodedJWT;
 import com.nimbusds.jwt.SignedJWT;
 import lombok.Data;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.cache.CacheManager;
 import org.springframework.cache.annotation.Cacheable;
+import org.springframework.http.ResponseEntity;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
-import org.springframework.vault.core.VaultTemplate;
-import org.springframework.vault.support.VaultResponse;
+import org.springframework.web.client.RestTemplate;
 
 import java.security.KeyFactory;
 import java.security.NoSuchAlgorithmException;
-import java.security.interfaces.RSAPrivateKey;
+import java.security.PublicKey;
 import java.security.interfaces.RSAPublicKey;
 import java.security.spec.InvalidKeySpecException;
 import java.security.spec.X509EncodedKeySpec;
@@ -40,32 +39,25 @@ public class JwtValidationService {
     private String expectedNamespace;
 
     @Autowired
-    private VaultTemplate vaultTemplate;
+    private CacheManager cacheManager;
 
     @Autowired
-    private CacheManager cacheManager;
+    RestTemplate restTemplate;
 
     public boolean validateJwtToken(String jwtToken) {
         try {
-            SignedJWT signedJWT = SignedJWT.parse(jwtToken);
-            String issuer = signedJWT.getJWTClaimsSet().getStringClaim("issuer");
+            DecodedJWT decodedJWT = JWT.decode(jwtToken);
+            String issuer = decodedJWT.getIssuer();
 
-            if (!expectedIssuer.equals(issuer)) {
+            List<String> wellKnownKeys = getWellKnownKeysFromIssuer(issuer);
+
+            RSAPublicKey publicKey = getPublicKey(wellKnownKeys);
+            if (publicKey == null) {
                 return false;
             }
 
-            String namespace = signedJWT.getJWTClaimsSet().getStringClaim("namespace");
-
-            if (!expectedNamespace.equals(namespace)) {
-                return false;
-            }
-
-            List<String> keys = getWellKnownKeys(namespace);
-
-            if(!validateJwtToken(jwtToken,keys)){
-                return false;
-            }
-
+            Algorithm algorithm = Algorithm.RSA256(publicKey, null);
+            algorithm.verify(decodedJWT);
 
             return true;
         } catch (Exception e) {
@@ -73,6 +65,55 @@ public class JwtValidationService {
             return false;
         }
     }
+
+    @Cacheable(value = "wellKnownKeysCache", key = "#issuer")
+    private List<String> getWellKnownKeysFromIssuer(String issuer) {
+        String wellKnownKeysUrl = issuer;
+        ResponseEntity<Map> responseEntity;
+        responseEntity = restTemplate.getForEntity(wellKnownKeysUrl, Map.class);
+        List<String> wellKnownKeys = new ArrayList<>();
+
+        List<Map<String, String>> keys = (List<Map<String, String>>) responseEntity.getBody().get("keys");
+
+        if (keys != null) {
+            for (Map<String, String> key : keys) {
+                String kty = key.get("kty");
+                String n = key.get("n");
+                String e = key.get("e");
+
+                if ("RSA".equals(kty)) {
+                    String publicKey = "-----BEGIN PUBLIC KEY-----\n"
+                            + n + "\n"
+                            + e + "\n"
+                            + "-----END PUBLIC KEY-----";
+
+                    wellKnownKeys.add(publicKey);
+                }
+            }
+        }
+
+        return wellKnownKeys;
+    }
+
+    private RSAPublicKey getPublicKey(List<String> wellKnownKeys) {
+        try {
+            for (String publicKeyString : wellKnownKeys) {
+                byte[] decodedKey = Base64.getDecoder().decode(publicKeyString);
+                X509EncodedKeySpec keySpec = new X509EncodedKeySpec(decodedKey);
+                KeyFactory keyFactory = KeyFactory.getInstance("RSA");
+                PublicKey publicKey = keyFactory.generatePublic(keySpec);
+
+                if (publicKey instanceof RSAPublicKey) {
+                    return (RSAPublicKey) publicKey;
+                }
+            }
+        } catch (NoSuchAlgorithmException | InvalidKeySpecException e) {
+            e.printStackTrace();
+        }
+
+        return null;
+    }
+
 
     public List<String> getClaims(String token) {
         SignedJWT signedJWT = null;
@@ -86,47 +127,9 @@ public class JwtValidationService {
 
     }
 
-    @Cacheable(value = "wellKnownKeysCache", key = "#namespace")
-    public List<String> getWellKnownKeys(String namespace) {
-        VaultResponse response = vaultTemplate.read("secret/well-known-keys/" + namespace);
-
-        if (response != null && response.getData() != null) {
-            Map<String, Object> data = response.getData();
-            List<String> wellKnownKeys = (List<String>) data.get("keys");
-            return wellKnownKeys;
-        } else {
-            return new ArrayList<>();
-        }
-
-    }
-
-    public boolean validateJwtToken(String jwtToken, List<String> wellKnownKeys) {
-        try {
-            for (String publicKey : wellKnownKeys) {
-                byte[] decodedPublicKey = Base64.getDecoder().decode(publicKey);
-                X509EncodedKeySpec spec = new X509EncodedKeySpec(decodedPublicKey);
-                KeyFactory keyFactory = KeyFactory.getInstance("RSA");
-                RSAPublicKey rsaPublicKey = (RSAPublicKey) keyFactory.generatePublic(spec);
-                Algorithm algorithm = Algorithm.RSA256(rsaPublicKey, null);
-
-                JWTVerifier verifier = JWT.require(algorithm).build();
-
-                verifier.verify(jwtToken);
-
-                return true;
-            }
-        } catch (JWTVerificationException e) {
-            e.printStackTrace();
-        } catch (NoSuchAlgorithmException e) {
-            throw new RuntimeException(e);
-        } catch (InvalidKeySpecException e) {
-            throw new RuntimeException(e);
-        }
-        return false;
-    }
-
     @Scheduled(cron = "0 0 * * * *")
     public void evictCache() {
         cacheManager.getCache("wellKnownKeysCache").clear();
     }
+
 }
