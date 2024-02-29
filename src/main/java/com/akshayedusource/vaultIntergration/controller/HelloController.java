@@ -13,7 +13,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class HelloController {
 
     @GetMapping("/hello")
-    @PreAuthorize("hasRole('kafka-admin')")
+    @PreAuthorize("hasRole('kafka_admin')")
     @SecurityRequirement(name = "Bearer Authentication")
     public ResponseEntity<String> hello() {
         return new ResponseEntity<String>("Hello", HttpStatus.ACCEPTED);
