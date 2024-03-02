@@ -1,10 +1,15 @@
 package com.akshayedusource.vaultIntergration.service;
 
+import com.akshayedusource.vaultIntergration.exceptions.TokenExpiredException;
 import com.auth0.jwt.JWT;
 import com.auth0.jwt.algorithms.Algorithm;
+import com.auth0.jwt.exceptions.JWTVerificationException;
 import com.auth0.jwt.interfaces.DecodedJWT;
 import com.nimbusds.jwt.SignedJWT;
 import lombok.Data;
+import lombok.extern.slf4j.Slf4j;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.cache.annotation.Cacheable;
@@ -19,122 +24,111 @@ import java.security.PublicKey;
 import java.security.interfaces.RSAPublicKey;
 import java.security.spec.InvalidKeySpecException;
 import java.security.spec.RSAPublicKeySpec;
-import java.security.spec.X509EncodedKeySpec;
 import java.text.ParseException;
 import java.util.*;
 import java.util.stream.Collectors;
 
 @Service
 @Data
+@Slf4j
 public class JwtValidationService {
-
-    @Value("${jwt.issuer}")
-    private String expectedIssuer;
-
-    @Value("${jwt.namespace}")
-    private String expectedNamespace;
-
-//    @Autowired
-//    private CacheManager cacheManager;
 
     @Autowired
     RestTemplate restTemplate;
 
     public static final String WELL_KNOWN_KEYS_ENDPOINT="/.well-known/keys";
 
-    public boolean validateJwtToken(String jwtToken) {
+    private static final Logger log = LoggerFactory.getLogger(JwtValidationService.class);
+
+
+    public boolean validateJwtToken(String jwtToken){
         try {
+            log.debug("Validating JWT token...");
             DecodedJWT decodedJWT = JWT.decode(jwtToken);
             String issuer = decodedJWT.getIssuer();
+            log.debug("Validating JWT token issued by: {}", issuer);
+
+            String kid = decodedJWT.getKeyId();
+            log.debug("Key ID (kid) extracted from JWT: {}", kid);
 
             List<Map<String, String>> wellKnownKeys = getWellKnownKeysFromIssuer(issuer);
+            log.debug("Retrieved well-known keys from issuer: {}", wellKnownKeys);
 
-            RSAPublicKey publicKey = getPublicKey(wellKnownKeys);
+            Map<String, String> publicKeyMap = wellKnownKeys.stream()
+                    .filter(key -> kid.equals(key.get("kid")))
+                    .findFirst()
+                    .orElse(null);
+
+            if (publicKeyMap == null) {
+                log.warn("No matching public key found for kid: {}", kid);
+                return false;
+            }
+
+            RSAPublicKey publicKey = getPublicKey(publicKeyMap);
             if (publicKey == null) {
+                log.error("Error obtaining RSA public key for kid: {}", kid);
                 return false;
             }
 
             Algorithm algorithm = Algorithm.RSA256(publicKey, null);
             algorithm.verify(decodedJWT);
 
+            Date expirationTime = decodedJWT.getExpiresAt();
+            if (expirationTime != null && expirationTime.before(new Date())) {
+                log.warn("JWT token has expired. Expiration time: {}", expirationTime);
+                throw new TokenExpiredException("JWT token has expired");
+            }
+
+            log.info("JWT token validated successfully.");
             return true;
+        } catch (JWTVerificationException e) {
+            log.warn("JWT token validation failed: {}", e.getMessage());
+            throw new JWTVerificationException("JWT token validation failed");
+        } catch (TokenExpiredException e) {
+            log.warn("JWT token has expired: {}", e.getMessage());
+            throw e;
         } catch (Exception e) {
-            e.printStackTrace();
-            return false;
+            log.error("Error occurred during JWT token validation: {}", e.getMessage());
+            throw new RuntimeException("Error occurred during JWT token validation");
         }
     }
+
+
+
+
 
     @Cacheable(value = "wellKnownKeysCache", key = "#issuer")
     private List<Map<String, String>> getWellKnownKeysFromIssuer(String issuer) {
         String wellKnownKeysUrl = issuer + WELL_KNOWN_KEYS_ENDPOINT;
-        ResponseEntity<Map> responseEntity;
-//        responseEntity = restTemplate.getForEntity(wellKnownKeysUrl, Map.class);
-        List<String> wellKnownKeys = new ArrayList<>();
+        try {
+            log.debug("Fetching well-known keys from: {}", wellKnownKeysUrl);
+            ResponseEntity<Map[]> responseEntity = restTemplate.getForEntity(wellKnownKeysUrl, Map[].class);
+            Map<String, String>[] responseBody = responseEntity.getBody();
 
-//        Map<String, Object> responseBody =
-//        if (responseBody != null) {
-        List<Map<String, String>> keys = new ArrayList<>();
+            if (responseBody == null || responseBody.length == 0) {
+                log.error("Failed to fetch well-known keys from {}", wellKnownKeysUrl);
+                throw new IllegalStateException("Failed to fetch well-known keys");
+            }
 
-        Map<String, String> key1 = new HashMap<>();
-        key1.put("use", "sig");
-        key1.put("kty", "RSA");
-        key1.put("kid", "00570099-d5ef-5d29-123f-faf28522a8ec");
-        key1.put("alg", "RS256");
-        key1.put("n", "xlcmNzEiGX1huyXC-x4wmPIXiDo2paGLGCMIQKB8nQvFU-JElAFQkFzMFEgQkPlq0X0ObeOxtBQlJEXlthsRt-6MUjumud-uG2cQcz8WUGD08G32xIMOILV5DK9UrsPOrJKW_MumAXlMviyBcQu3Ft1qQEDaLxR4m_bVW5pJnNIhicuTm9-wLyjaKSNxJty8ReOYh0OI-a5gQ33G39XoILpMo-DcuC6CP-ME-T4YFK7favGpUYXDsAaN8wbGWarAx56XkiAWPx2PhIMRt8DGLvCR-L91gTE2yKKx9ABLAxRVew5xxdeGZgWCUAZo-T7-vcIlCi3nGW4n3DWdtnK6aw");
-        key1.put("e", "AQAB");
-
-        Map<String, String> key2 = new HashMap<>();
-        key2.put("use", "sig");
-        key2.put("kty", "RSA");
-        key2.put("kid", "aa4e6f6b-15d7-89a9-24cc-907155113f77");
-        key2.put("alg", "RS256");
-        key2.put("n", "quE05txf4gj8AcG1VhySEzpk7T4JkFOzWRpqDnZgy7Jv9zs5h7dqWVLkG-vV7yINrO5o5Qrr7A9XdIU62LvHGQvLjDWykAFfBWr1GDuyq0vqHpCcW97B2RFRFouKVQ1PmgfgAW172r2sHcNXEbwK8RK1saPQfODynwy0qet9cPlrW_wAIhYME2cldfy0PZY8Q9GImvsMjYnSORfOCwBNNqT-kwcVZgO7IscYrmWlPZrGdKsypSXE70EbOxPoQJjTqeP9oevNKg6Pnd1yya2hy-8sGsipNFWqfbOzaDgBttoVyFcNyp1GDMC-gmJmo0vPEYBGA5IsxHZ8CMF1Ixg33w");
-        key2.put("e", "AQAB");
-
-        Map<String, String> key3 = new HashMap<>();
-        key3.put("use", "sig");
-        key3.put("kty", "RSA");
-        key3.put("kid", "f81acfea-dfae-b3d6-a895-bff4dfc1b4ad");
-        key3.put("alg", "RS256");
-        key3.put("n", "4Q4e7WccWtKm77ngU7tatiV-uE5AMbBvIqtb-QcFc_J97v68Z0jyk0ezyh6BV7UAVmL_BAuTQrZdaEJIUaMFNDqproyMqmRN3E2n_68oXodttKCZDS7q3dMZ0WAs-DT-aKkNubGcbpQC17xvrvyoMUS3Ub57HLWs9dV-XfKBem6ouGTI-IaDP75XM82CNzG8Hv1jwC3G4RpuWDE-AmK9zWFrToay3YL5j3Mcbc1bqeNi4sYVZQ_C7CgN-vR8UdE1i4vpbgaQ1mRsfc7Q0BAAYxCPa0pSlGROc3XRUjtc5LW_dlIh16Uwx3PzrsR8I0tp3BInJyrGO2sYOfgvbXHHrQ");
-        key3.put("e", "AQAB");
-
-        keys.add(key1);
-        keys.add(key2);
-        keys.add(key3);
-
-        return keys;
+            List<Map<String, String>> keys = Arrays.asList(responseBody);
+            log.debug("Well-known keys fetched successfully.");
+            return keys;
+        } catch (Exception e) {
+            log.error("Error occurred while fetching well-known keys: {}", e.getMessage());
+            throw new IllegalStateException("Failed to fetch well-known keys", e);
+        }
     }
 
-//    private RSAPublicKey getPublicKey(List<String> wellKnownKeys) {
-//        try {
-//            for (String publicKeyString : wellKnownKeys) {
-//                String base64EncodedKey = publicKeyString
-//                        .replace("-----BEGIN PUBLIC KEY-----", "")
-//                        .replace("-----END PUBLIC KEY-----", "")
-//                        .replaceAll("\\s+", "");
-//                byte[] decodedKey = Base64.getDecoder().decode(base64EncodedKey);
-//                X509EncodedKeySpec keySpec = new X509EncodedKeySpec(decodedKey);
-//                KeyFactory keyFactory = KeyFactory.getInstance("RSA");
-//                PublicKey publicKey = keyFactory.generatePublic(keySpec);
-//
-//                if (publicKey instanceof RSAPublicKey) {
-//                    return (RSAPublicKey) publicKey;
-//                }
-//            }
-//        } catch (NoSuchAlgorithmException | InvalidKeySpecException e) {
-//            e.printStackTrace();
-//        }
-//
-//        return null;
-//    }
 
-    private RSAPublicKey getPublicKey(List<Map<String, String>> wellKnownKeys) {
+
+    private RSAPublicKey getPublicKey(Map<String, String> wellKnownKey) {
         try {
-            for (Map<String, String> key : wellKnownKeys) {
-                String kty = key.get("kty");
-                String modulus = key.get("n");
-                String exponent = key.get("e");
+            log.debug("Extracting RSA public key from well-known key: {}", wellKnownKey);
+
+            if (wellKnownKey != null && !wellKnownKey.isEmpty()) {
+                String kty = wellKnownKey.get("kty");
+                String modulus = wellKnownKey.get("n");
+                String exponent = wellKnownKey.get("e");
 
                 if ("RSA".equals(kty)) {
                     byte[] modulusBytes = Base64.getUrlDecoder().decode(modulus);
@@ -148,31 +142,36 @@ public class JwtValidationService {
                     PublicKey publicKey = keyFactory.generatePublic(keySpec);
 
                     if (publicKey instanceof RSAPublicKey) {
-                        return (RSAPublicKey) publicKey;
+                        RSAPublicKey rsaPublicKey = (RSAPublicKey) publicKey;
+                        log.debug("RSA public key extracted successfully: {}", rsaPublicKey);
+                        return rsaPublicKey;
                     }
                 }
             }
         } catch (NoSuchAlgorithmException | InvalidKeySpecException e) {
-            e.printStackTrace();
+            log.error("Error occurred while extracting RSA public key: {}", e.getMessage());
         }
 
+        log.warn("Failed to extract RSA public key from well-known key: {}", wellKnownKey);
         return null;
     }
+
 
     public List<String> getClaims(String token) {
         SignedJWT signedJWT = null;
         try {
+            log.debug("Parsing JWT token to extract claims...");
             signedJWT = SignedJWT.parse(token);
-            return signedJWT.getJWTClaimsSet().getStringListClaim("groups").stream().map(s -> "ROLE_" + s).collect(Collectors.toList());
+
+            List<String> claims = signedJWT.getJWTClaimsSet().getStringListClaim("groups").stream()
+                    .map(s -> "ROLE_" + s)
+                    .collect(Collectors.toList());
+
+            log.debug("Claims extracted successfully: {}", claims);
+            return claims;
         } catch (ParseException e) {
-            e.printStackTrace();
+            log.error("Error occurred while parsing JWT token: {}", e.getMessage());
             return null;
         }
-
     }
-
-//    @Scheduled(cron = "0 0 * * * *")
-//    public void evictCache() {
-//        cacheManager.getCache("wellKnownKeysCache").clear();
-//    }
 }
