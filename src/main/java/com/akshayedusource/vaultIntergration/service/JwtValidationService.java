@@ -51,6 +51,12 @@ public class JwtValidationService {
             String kid = decodedJWT.getKeyId();
             log.debug("Key ID (kid) extracted from JWT: {}", kid);
 
+            Date expirationTime = decodedJWT.getExpiresAt();
+            if (expirationTime != null && expirationTime.before(new Date())) {
+                log.warn("JWT token has expired. Expiration time: {}", expirationTime);
+                throw new TokenExpiredException("JWT token has expired");
+            }
+
             List<Map<String, String>> wellKnownKeys = getWellKnownKeysFromIssuer(issuer);
             log.debug("Retrieved well-known keys from issuer: {}", wellKnownKeys);
 
@@ -73,11 +79,7 @@ public class JwtValidationService {
             Algorithm algorithm = Algorithm.RSA256(publicKey, null);
             algorithm.verify(decodedJWT);
 
-            Date expirationTime = decodedJWT.getExpiresAt();
-            if (expirationTime != null && expirationTime.before(new Date())) {
-                log.warn("JWT token has expired. Expiration time: {}", expirationTime);
-                throw new TokenExpiredException("JWT token has expired");
-            }
+
 
             log.info("JWT token validated successfully.");
             return true;
