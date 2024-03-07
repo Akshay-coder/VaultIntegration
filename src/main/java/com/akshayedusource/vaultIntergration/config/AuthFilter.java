@@ -20,6 +20,7 @@ import org.springframework.web.servlet.HandlerExceptionResolver;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 
@@ -42,6 +43,11 @@ public class AuthFilter extends OncePerRequestFilter {
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain) throws ServletException, IOException {
         String authHeader = request.getHeader("Authorization");
+        if (isIgnoredURI(request.getRequestURI())) {
+            log.debug("Ignored this URL from security {}", request.getRequestURI());
+            filterChain.doFilter(request, response);
+        }
+
         String token = null;
         try {
             if (authHeader == null || !authHeader.startsWith("Bearer ")) {
@@ -82,6 +88,15 @@ public class AuthFilter extends OncePerRequestFilter {
             handlerExceptionResolver.resolveException(request, response, null, e);
         }
         filterChain.doFilter(request,response);
+    }
+
+    private boolean isIgnoredURI(String requestURI) {
+        for (Pattern pattern : ExcludedURLs.getPatterns()) {
+            if (pattern.matcher(requestURI).find()) {
+                return true;
+            }
+        }
+        return false;
     }
 
 
